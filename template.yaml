@@ -166,8 +166,6 @@ Resources:
           Value: !Ref ProjectName
         - Key: Owner
           Value: dev1
-      LogGroupName: !Sub '/aws/lambda/${ProjectName}-${Environment}-function'
-      RetentionInDays: !Ref LogRetentionDays
 
   # ============================================================================
   # Lambda Function

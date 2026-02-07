@@ -75,7 +75,137 @@ template.yaml
 
 ---
 
-## 3. デプロイ手順
+## 3. AWS CLI セットアップ（前提条件）
+
+### 3.1 AWS CLI インストール（Linux）
+
+#### Ubuntu / Debian
+```bash
+# システムパッケージを更新
+sudo apt-get update
+
+# Python 3 と pip をインストール
+sudo apt-get install -y python3 python3-pip
+
+# AWS CLI v2 をインストール（推奨）
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# インストール確認
+aws --version
+```
+
+#### Amazon Linux / CentOS / RHEL
+```bash
+# AWS CLI v2 をインストール
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# インストール確認
+aws --version
+```
+
+### 3.2 AWS 認証情報の設定
+
+#### 方法1: インタラクティブ設定（推奨）
+```bash
+aws configure
+```
+
+以下の情報を入力：
+```
+AWS Access Key ID [None]: <YOUR_ACCESS_KEY_ID>
+AWS Secret Access Key [None]: <YOUR_SECRET_ACCESS_KEY>
+Default region name [None]: ap-northeast-1
+Default output format [None]: json
+```
+
+#### 方法2: 環境変数を使用
+```bash
+export AWS_ACCESS_KEY_ID=<YOUR_ACCESS_KEY_ID>
+export AWS_SECRET_ACCESS_KEY=<YOUR_SECRET_ACCESS_KEY>
+export AWS_DEFAULT_REGION=ap-northeast-1
+```
+
+#### 方法3: IAM ロール（EC2 から実行する場合）
+```bash
+# EC2 インスタンスプロファイルで自動認証
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY は不要
+```
+
+### 3.3 認証情報の確認
+
+```bash
+# 現在の認証ユーザーを確認
+aws sts get-caller-identity
+```
+
+**期待される出力**：
+```json
+{
+    "UserId": "AIDAI...",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/your-username"
+}
+```
+
+### 3.4 CloudFormation 実行権限の確認
+
+以下の権限が必要です：
+
+**CloudFormation**
+- cloudformation:CreateStack
+- cloudformation:UpdateStack
+- cloudformation:DeleteStack
+- cloudformation:DescribeStacks
+
+**SQS**
+- sqs:CreateQueue
+- sqs:DeleteQueue
+- sqs:GetQueueAttributes
+- sqs:SetQueueAttributes
+
+**S3**
+- s3:CreateBucket
+- s3:DeleteBucket
+- s3:GetBucketPolicy
+- s3:PutBucketPolicy
+- s3:PutPublicAccessBlock
+
+**Lambda**
+- lambda:CreateFunction
+- lambda:DeleteFunction
+- lambda:GetFunction
+- lambda:UpdateFunctionCode
+- lambda:CreateEventSourceMapping
+- lambda:DeleteEventSourceMapping
+
+**IAM**
+- iam:CreateRole
+- iam:DeleteRole
+- iam:PutRolePolicy
+- iam:DeleteRolePolicy
+- iam:GetRole
+
+**CloudWatch Logs**
+- logs:CreateLogGroup
+- logs:DeleteLogGroup
+- logs:TagLogGroup
+
+**確認コマンド**：
+```bash
+# ユーザーの権限を確認（IAM コンソール経由推奨）
+# または以下を実行してアクセス可能を確認
+aws s3 ls
+aws sqs list-queues --region ap-northeast-1
+aws lambda list-functions --region ap-northeast-1
+```
+
+---
+
+## 4. デプロイ手順
 
 ### 前提条件
 - AWS CLI がインストール済み
@@ -155,7 +285,7 @@ aws cloudformation describe-stacks \
 
 ---
 
-## 4. 検証チェックリスト
+## 5. 検証チェックリスト
 
 デプロイ後、以下の項目を確認してください：
 
@@ -185,7 +315,7 @@ aws cloudformation describe-stacks \
 
 ---
 
-## 5. Phase 2 準備事項（Bedrock 統合）
+## 6. Phase 2 準備事項（Bedrock 統合）
 
 以下は Phase 2 で実装予定：
 
@@ -316,7 +446,7 @@ aws budgets create-budget \
 
 ---
 
-## 7. トラブルシューティング
+## 8. トラブルシューティング
 
 ### Lambda Function が実行されない
 ```bash
@@ -348,7 +478,7 @@ aws iam get-role-policy \
 
 ---
 
-## 8. サポート・問い合わせ
+## 9. サポート・問い合わせ
 
 不明な点がある場合は、以下のドキュメントを参照してください：
 
@@ -359,7 +489,7 @@ aws iam get-role-policy \
 
 ---
 
-## 9. 次のステップ
+## 10. 次のステップ
 
 1. **デプロイ実行**（このドキュメント内のコマンド実行）
 2. **検証テスト**実施（検証チェックリストを参照）
