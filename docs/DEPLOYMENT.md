@@ -218,6 +218,102 @@ aws cloudformation describe-stacks \
 
 **注**：本番運用時は予算アラートを設定してください
 
+### Ownerタグによるコスト管理
+
+全リソースに `Owner: dev1` タグが設定されているため、以下の方法でコストを追跡できます。
+
+#### AWS Cost Explorer でのフィルタリング
+
+**方法1: AWS Management Console**
+1. Cost Explorer を開く
+2. 「Filters」→「Tag」を選択
+3. `Owner` = `dev1` でフィルタリング
+4. 期間を指定してコストを表示
+
+**方法2: AWS CLI**
+```bash
+# 月次コストを取得（2026年2月の例）
+aws ce get-cost-and-usage \
+  --time-period Start=2026-02-01,End=2026-03-01 \
+  --granularity MONTHLY \
+  --metrics UnblendedCost \
+  --filter '{
+    "Tags": {
+      "Key": "Owner",
+      "Values": ["dev1"]
+    }
+  }' \
+  --region us-east-1
+```
+
+#### リソースグループでの管理
+
+**リソースグループ作成**
+```bash
+# Owner=dev1 のリソースをグループ化
+aws resource-groups create-group \
+  --name lambda-agents-dev1-resources \
+  --resource-query '{
+    "Type": "TAG_FILTERS_1_0",
+    "Query": "{\"ResourceTypeFilters\":[\"AWS::AllSupported\"],\"TagFilters\":[{\"Key\":\"Owner\",\"Values\":[\"dev1\"]}]}"
+  }' \
+  --region ap-northeast-1
+
+# リソースグループのリソース一覧
+aws resource-groups list-group-resources \
+  --group-name lambda-agents-dev1-resources \
+  --region ap-northeast-1
+```
+
+#### タグエディターでの確認
+
+**AWS Management Console から**
+1. AWS Resource Groups & Tag Editor を開く
+2. 「Tag Editor」を選択
+3. 「Find resources」で `Owner: dev1` を検索
+4. 全リソースを一覧表示
+
+#### 予算アラート設定（推奨）
+
+```bash
+# Owner=dev1 タグで月額$10を超えたら通知
+aws budgets create-budget \
+  --account-id <AWS_ACCOUNT_ID> \
+  --budget '{
+    "BudgetName": "lambda-agents-dev1-budget",
+    "BudgetLimit": {
+      "Amount": "10",
+      "Unit": "USD"
+    },
+    "TimeUnit": "MONTHLY",
+    "BudgetType": "COST",
+    "CostFilters": {
+      "TagKeyValue": ["user:Owner$dev1"]
+    }
+  }' \
+  --notifications-with-subscribers '[
+    {
+      "Notification": {
+        "NotificationType": "ACTUAL",
+        "ComparisonOperator": "GREATER_THAN",
+        "Threshold": 80,
+        "ThresholdType": "PERCENTAGE"
+      },
+      "Subscribers": [
+        {
+          "SubscriptionType": "EMAIL",
+          "Address": "your-email@example.com"
+        }
+      ]
+    }
+  ]'
+```
+
+**ポイント**：
+- 全リソース（SQS, S3, Lambda, IAM, CloudWatch Logs）に `Owner: dev1` タグが付与済み
+- Cost Explorer でタグフィルタリングにより、このプロジェクト専用のコストを可視化
+- リソースグループで一元管理し、運用を効率化
+
 ---
 
 ## 7. トラブルシューティング
@@ -227,7 +323,7 @@ aws cloudformation describe-stacks \
 # Event Source Mapping の状態確認
 aws lambda list-event-source-mappings \
   --function-name lambda-agents-dev-function \
-  --region us-east-1
+  --region ap-northeast-1
 ```
 
 **原因**：Event Source Mapping が `Disabled` の可能性

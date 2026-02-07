@@ -36,6 +36,21 @@ CloudFormation の `Parameters` セクションで以下を外部化：
 | `LogRetentionDays` | 30 | Number | CloudWatch ログ保持期間 |
 | `BedrockRegion` | ap-northeast-1 | String | Bedrock API リージョン（東日本） |
 
+### 1.4 タグ戦略
+
+全リソースに以下のタグを統一的に適用：
+
+| タグキー | 値 | 用途 |
+|---------|-----|------|
+| `Environment` | dev/staging/prod | 環境識別 |
+| `Project` | lambda-agents | プロジェクト識別 |
+| `Owner` | dev1 | 所有者識別・コスト追跡 |
+
+**タグによるメリット**：
+- **コスト管理**：AWS Cost Explorer で `Owner: dev1` でフィルタリングし、プロジェクト別コストを可視化
+- **リソース検索**：Tag Editor で全リソースを一元管理
+- **運用効率化**：リソースグループで Owner 別にグループ化し、一括操作が可能
+
 ---
 
 ## 2. リソース詳細設計

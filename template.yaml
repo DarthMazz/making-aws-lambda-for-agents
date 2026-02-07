@@ -59,6 +59,8 @@ Resources:
           Value: !Ref Environment
         - Key: Project
           Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
 
   # Dead Letter Queue (kept for future use, not actively used in Phase 1)
   LambdaAgentsDLQ:
@@ -71,6 +73,8 @@ Resources:
           Value: !Ref Environment
         - Key: Project
           Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
 
   # ============================================================================
   # S3 Bucket for Bedrock Results
@@ -89,6 +93,8 @@ Resources:
       Tags:
         - Key: Environment
           Value: !Ref Environment
+        - Key: Owner
+          Value: dev1
         - Key: Project
           Value: !Ref ProjectName
 
@@ -142,8 +148,8 @@ Resources:
       Tags:
         - Key: Environment
           Value: !Ref Environment
-        - Key: Project
-          Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
 
   # ============================================================================
   # CloudWatch Log Group
@@ -151,6 +157,15 @@ Resources:
   LambdaLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-${Environment}-function'
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
       LogGroupName: !Sub '/aws/lambda/${ProjectName}-${Environment}-function'
       RetentionInDays: !Ref LogRetentionDays
 
@@ -241,6 +256,8 @@ Resources:
           Value: !Ref Environment
         - Key: Project
           Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
 
   # ============================================================================
   # Event Source Mapping (SQS to Lambda)
