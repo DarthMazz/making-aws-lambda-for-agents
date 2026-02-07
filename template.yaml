@@ -1,0 +1,300 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Lambda + SQS + Bedrock + S3 Integration Template'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: lambda-agents
+    Description: Project name prefix for all resources
+
+  LambdaMemory:
+    Type: Number
+    Default: 512
+    MinValue: 128
+    MaxValue: 3008
+    Description: Lambda function memory in MB
+
+  LambdaTimeout:
+    Type: Number
+    Default: 60
+    MinValue: 1
+    MaxValue: 900
+    Description: Lambda function timeout in seconds
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    Description: CloudWatch Logs retention period in days
+
+  BedrockRegion:
+    Type: String
+    Default: ap-northeast-1
+    Description: AWS region for Bedrock API calls
+
+Resources:
+  # ============================================================================
+  # SQS Queue
+  # ============================================================================
+  LambdaAgentsSQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-queue'
+      VisibilityTimeout: !Ref LambdaTimeout
+      MessageRetentionPeriod: 345600  # 4 days in seconds
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt LambdaAgentsDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Dead Letter Queue (kept for future use, not actively used in Phase 1)
+  LambdaAgentsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-dlq'
+      MessageRetentionPeriod: 1209600  # 14 days in seconds
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # S3 Bucket for Bedrock Results
+  # ============================================================================
+  LambdaAgentsResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-results-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Suspended
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # IAM Role for Lambda Execution
+  # ============================================================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt LambdaAgentsSQSQueue.Arn
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt LambdaAgentsResultsBucket.Arn
+                  - !Sub '${LambdaAgentsResultsBucket.Arn}/*'
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub 'arn:aws:bedrock:${BedrockRegion}:${AWS::AccountId}:foundation-model/*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # CloudWatch Log Group
+  # ============================================================================
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-${Environment}-function'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  LambdaAgentsFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaLogGroup
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-function'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: !Ref LambdaMemory
+      Timeout: !Ref LambdaTimeout
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref LambdaAgentsSQSQueue
+          S3_BUCKET_NAME: !Ref LambdaAgentsResultsBucket
+          BEDROCK_REGION: !Ref BedrockRegion
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          from datetime import datetime
+
+          logger = logging.getLogger()
+          logger.setLevel(os.environ.get('LOG_LEVEL', 'INFO'))
+
+          def lambda_handler(event, context):
+              """
+              Phase 1: Display SQS message content
+              
+              Args:
+                  event: SQS event containing Records
+                  context: Lambda context
+                  
+              Returns:
+                  dict: Status response
+              """
+              try:
+                  logger.info(f"Received event: {json.dumps(event)}")
+                  
+                  # Extract SQS records
+                  records = event.get('Records', [])
+                  
+                  if not records:
+                      logger.warning("No SQS records found in event")
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps({'message': 'No SQS records found'})
+                      }
+                  
+                  # Process first record (batch size = 1)
+                  record = records[0]
+                  message_body = json.loads(record['body'])
+                  
+                  logger.info(f"Processing message: {json.dumps(message_body)}")
+                  
+                  # Phase 1: Just display the message
+                  logger.info(f"Message content: {json.dumps(message_body, indent=2)}")
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'Message processed successfully',
+                          'timestamp': datetime.utcnow().isoformat()
+                      })
+                  }
+                  
+              except json.JSONDecodeError as e:
+                  logger.error(f"JSON decode error: {str(e)}")
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({'error': 'Invalid JSON in message body'})
+                  }
+              except Exception as e:
+                  logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': 'Internal server error'})
+                  }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # Event Source Mapping (SQS to Lambda)
+  # ============================================================================
+  SQSEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt LambdaAgentsSQSQueue.Arn
+      FunctionName: !Ref LambdaAgentsFunction
+      Enabled: true
+      BatchSize: 1
+      MaximumBatchingWindowInSeconds: 0
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+Outputs:
+  QueueURL:
+    Description: SQS Queue URL for sending messages
+    Value: !Ref LambdaAgentsSQSQueue
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-QueueURL'
+
+  QueueArn:
+    Description: SQS Queue ARN
+    Value: !GetAtt LambdaAgentsSQSQueue.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-QueueArn'
+
+  BucketName:
+    Description: S3 Bucket name for Bedrock results
+    Value: !Ref LambdaAgentsResultsBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-BucketName'
+
+  LambdaFunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt LambdaAgentsFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-FunctionArn'
+
+  LambdaFunctionName:
+    Description: Lambda Function Name
+    Value: !Ref LambdaAgentsFunction
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-FunctionName'
+
+  RoleArn:
+    Description: IAM Role ARN for Lambda Execution
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-RoleArn'
+
+  LogGroupName:
+    Description: CloudWatch Log Group Name
+    Value: !Ref LambdaLogGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-LogGroup'
