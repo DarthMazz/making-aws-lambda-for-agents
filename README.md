@@ -7,28 +7,48 @@ Python 3.12 で AWS Lambda を構築し、SQS メッセージを受け取って 
 ## 概要
 
 ```
-┌─────────────┐
-│  SQS Queue  │
-└──────┬──────┘
-       │
-       ▼
-┌──────────────────┐
-│  Lambda (Python  │
-│     3.12)        │
-└──────┬───────────┘
-       │
-       ├────────────────┐
-       │                │
-       ▼                ▼
-┌────────────┐    ┌──────────┐
-│  Bedrock   │    │   S3     │
-│   API      │    │ (Results)│
-└────────────┘    └──────────┘
+┌──────────────────────────────────────────────────────────┐
+│  API Gateway (REST API)                                  │
+│  POST /v1/agents (OpenAPI 3.0.0)                         │
+└─────────────────┬────────────────────────────────────────┘
+                  │
+                  │ (Direct invocation via HTTP)
+                  │
+┌─────────────────┴────────────────┐
+│          SQS Queue               │
+│  lambda-agents-dev-queue         │
+└─────────────────┬────────────────┘
+                  │ (Message-driven execution)
+                  │
+                  ▼
+        ┌──────────────────────┐
+        │  Lambda Function     │
+        │  (Python 3.12)       │
+        │                      │
+        │  Phase 1:   Log msg  │
+        │  Phase 1.1: Route    │
+        │            event     │
+        └──────────┬───────────┘
+                   │
+                   ├────────────────┐
+                   │                │
+                   ▼                ▼
+            ┌────────────┐    ┌──────────┐
+            │  Bedrock   │    │   S3     │
+            │   API      │    │(Results) │
+            └────────────┘    └──────────┘
+            (Phase 2+)        (Phase 2+)
 ```
+
+**入力ソース**（Phase 1.1 で対応）
+- **REST API**: HTTP POST /v1/agents から直接呼び出し
+- **SQS Queue**: メッセージキューからのイベント駆動
 
 ### 特徴
 
 - **IaC（Infrastructure as Code）**：CloudFormation で全リソース管理
+- **マルチソース対応**：SQS・REST API 両方のイベントに対応
+- **OpenAPI 統合**：REST API 仕様を OpenAPI 3.0.0 で管理
 - **セキュリティ第一**：IAM 権限最小化、S3 パブリックアクセスブロック
 - **本番対応**：CloudWatch Logs（30日保持）、DLQ 対応
 - **パラメータ化**：環境に応じた柔軟な設定
@@ -55,16 +75,35 @@ aws cloudformation create-stack \
   --stack-name lambda-agents-dev \
   --template-body file://template.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1
+  --region ap-northeast-1
 
 # 作成完了を確認
 aws cloudformation describe-stacks \
   --stack-name lambda-agents-dev \
-  --region us-east-1 \
+  --region ap-northeast-1 \
   --query 'Stacks[0].StackStatus'
 ```
 
-詳細なデプロイ手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) を参照してください。
+### API の呼び出し（デプロイ後）
+
+```bash
+# API エンドポイントを取得
+API_ENDPOINT=$(aws cloudformation describe-stacks \
+  --stack-name lambda-agents-dev \
+  --query 'Stacks[0].Outputs[?OutputKey==`ApiEndpoint`].OutputValue' \
+  --output text \
+  --region ap-northeast-1)
+
+# POST リクエストで送信
+curl -X POST "$API_ENDPOINT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": "AWSとは何ですか？"
+  }'
+```
+
+詳細なデプロイ・テスト手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) を参照してください。
 
 ---
 
@@ -77,7 +116,9 @@ aws cloudformation describe-stacks \
 └── docs/
     ├── REQUIREMENTS.md          # 要件定義書
     ├── ARCHITECTURE.md          # テンプレート設計書
-    └── DEPLOYMENT.md            # デプロイ手順書
+    ├── DEPLOYMENT.md            # デプロイ手順書
+    └── api/
+        └── openapi.yaml         # OpenAPI 3.0.0 仕様書
 ```
 
 ---
@@ -86,9 +127,10 @@ aws cloudformation describe-stacks \
 
 | ドキュメント | 対象者 | 内容 |
 |------------|--------|------|
-| [REQUIREMENTS.md](docs/REQUIREMENTS.md) | PM / 要件定義者 | 機能・インフラ要件 |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | アーキテクト / デザイナー | テンプレート設計 |
-| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | DevOps / 運用者 | デプロイ方法・トラブルシューティング |
+| [REQUIREMENTS.md](docs/REQUIREMENTS.md) | PM / 要件定義者 | 機能・インフラ要件（Phase 1 & 1.1） |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | アーキテクト / デザイナー | テンプレート設計・リソース設計 |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | DevOps / 運用者 | デプロイ方法・テスト手順・トラブルシューティング |
+| [api/openapi.yaml](docs/api/openapi.yaml) | API ユーザー / バックエンド開発者 | REST API 仕様（OpenAPI 3.0.0） |
 
 ---
 
@@ -122,16 +164,48 @@ Lambda 実行ロールに以下の権限を自動付与：
 
 - [x] CloudFormation テンプレート
 - [x] SQS → Lambda イベントマッピング
-- [x] Lambda 関数（メッセージ表示のみ）
+- [x] Lambda 関数（メッセージ表示）
 - [x] S3 バケット・IAM 権限
 - [x] CloudWatch Logs 統合
 - [x] 要件定義書・設計書・デプロイ手順書
 
-### Phase 2 予定（Bedrock 統合）
+---
+
+## Phase 1.1 ステータス（API Gateway 統合）
+
+### 実装済み
+
+- [x] API Gateway REST API（`POST /v1/agents`）
+- [x] Lambda イベント形式判定（SQS vs API Gateway）
+- [x] API Gateway ハンドラー実装
+- [x] OpenAPI 3.0.0 仕様書（`docs/api/openapi.yaml`）
+- [x] リクエスト・レスポンス仕様定義
+- [x] API テスト用サンプルコード
+
+### AWS リソース追加
+
+| リソース | 名前 | 用途 |
+|---------|------|------|
+| **API Gateway** | `lambda-agents-dev-api` | REST API |
+| **API Resource** | `/v1` → `/v1/agents` | エンドポイントパス |
+| **API Method** | `POST` | HTTP メソッド |
+| **API Stage** | `dev` | デプロイステージ |
+| **Lambda Permission** | API Gateway → Lambda | 実行権限 |
+
+### 次のステップ
+
+- API Gateway アクセスログの有効化
+- レート制限の設定（Phase 2）
+- 認証・認可の実装（Phase 2）
+
+---
+
+## Phase 2 予定（Bedrock 統合・認証化）
 
 - [ ] Bedrock API インテグレーション
 - [ ] S3 への結果保存処理
 - [ ] エラーハンドリング拡張
+- [ ] API キー / OAuth による認証
 - [ ] ローカルテスト環境（SAM/Moto）
 
 ---
@@ -166,10 +240,22 @@ Deployment (デプロイ)
 # Event Source Mapping の状態確認
 aws lambda list-event-source-mappings \
   --function-name lambda-agents-dev-function \
-  --region us-east-1
+  --region ap-northeast-1
 ```
 
 → `State: Disabled` の場合は有効化してください
+
+### API Gateway エンドポイントが返されない
+
+```bash
+# Stack の出力を確認
+aws cloudformation describe-stacks \
+  --stack-name lambda-agents-dev \
+  --region ap-northeast-1 \
+  --query 'Stacks[0].Outputs'
+```
+
+→ リソースの作成完了まで待機してください（5～10分）
 
 ### S3 への書き込みが失敗
 
@@ -183,7 +269,7 @@ aws iam get-role-policy \
 
 ### Bedrock API にアクセスできない
 
-- 使用リージョンで Bedrock が利用可能か確認
+- 使用リージョン（`ap-northeast-1`）で Bedrock が利用可能か確認
 - モデル ID が正しいか確認（[Bedrock ドキュメント](https://docs.aws.amazon.com/ja_jp/bedrock/latest/userguide/model-ids.html)）
 
 ---

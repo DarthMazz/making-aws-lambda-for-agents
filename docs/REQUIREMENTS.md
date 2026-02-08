@@ -22,11 +22,76 @@ SQS → Lambda → Bedrock API → S3 (結果保存)
 
 ### 2.2 処理内容
 - **フェーズ1（初期）**：SQS メッセージ内容の表示（ログ出力）
+- **フェーズ1.1（API統合）**：API Gateway 経由での直接呼び出しに対応
 - **フェーズ2以降**：Bedrock へのコール実装
 
 ### 2.3 メモリ・タイムアウト設定
 - **メモリ**：512 MB（提案値。Bedrock コール時に調整可能）
 - **タイムアウト**：60 秒（提案値。処理内容に応じて調整）
+
+---
+
+## 3a. API Gateway 連携仕様（フェーズ1.1）
+
+| 項目 | 値 |
+|------|-----|
+| API タイプ | REST API |
+| エンドポイント | `/v1/agents` |
+| HTTPメソッド | POST |
+| リージョン | ap-northeast-1（東日本） |
+| 認証 | なし（Phase 1.1） |
+| OpenAPI 仕様 | `docs/api/openapi.yaml` を参照 |
+
+### 3a.1 リクエスト仕様
+
+**Content-Type**: `application/json`
+
+**リクエストボディ**:
+```json
+{
+  "request_id": "uuid",
+  "prompt": "質問内容",
+  "model_id": "anthropic.claude-3-sonnet-20240229-v1:0"
+}
+```
+
+**必須フィールド**:
+- `request_id`: リクエストの一意識別子
+- `prompt`: 処理対象の質問・プロンプト
+
+**オプションフィールド**:
+- `model_id`: Bedrock モデルID（デフォルト: Claude 3 Sonnet）
+
+### 3a.2 レスポンス仕様
+
+**成功時（200）**:
+```json
+{
+  "message": "Message processed successfully via API Gateway",
+  "request_id": "uuid",
+  "timestamp": "2026-02-08T00:00:00.000000"
+}
+```
+
+**エラー時（400/500）**:
+```json
+{
+  "error": "エラーメッセージ"
+}
+```
+
+### 3a.3 仕様例
+
+**リクエスト例**:
+```bash
+curl -X POST \
+  https://{APIId}.execute-api.ap-northeast-1.amazonaws.com/dev/v1/agents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": "AWSとは何ですか？"
+  }'
+```
 
 ---
 
@@ -169,18 +234,24 @@ aws cloudformation create-stack \
 - ローカル開発環境（SAM/LocalStack）
 - ユニットテスト・統合テスト
 - 本番環境（prod）
-- API Gateway / 外部エンドポイント
+- ~~API Gateway / 外部エンドポイント~~ → Phase 1.1 で実装
+- 認証・認可（Phase 2 で実装予定）
 - VPC / NAT Gateway
 
 ---
 
 ## 10. 次のステップ
 
-1. **Architect**：CloudFormation テンプレート設計
-2. **Coder**：Lambda 関数実装 + template.yaml 作成
-3. **Tester**：（不要）
-4. **Reviewer**：コード・テンプレート確認
-5. **Security**：IAM 権限・Bedrock アクセスの確認
+1. **Phase 1.1（現在）**
+   - Architect：API Gateway テンプレート設計完了
+   - Coder：Lambda 関数 + template.yaml 実装完了
+   - Reviewer：コード・テンプレート確認
+   - Security：IAM 権限・API アクセスの確認
+
+2. **Phase 2**
+   - Bedrock へのコール実装
+   - S3 への結果保存
+   - 認証・認可の追加（API Key / OAuth）
 
 ---
 

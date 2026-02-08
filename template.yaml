@@ -196,12 +196,99 @@ Resources:
           logger = logging.getLogger()
           logger.setLevel(os.environ.get('LOG_LEVEL', 'INFO'))
 
-          def lambda_handler(event, context):
+          def _is_sqs_event(event):
+              """Check if the event is from SQS"""
+              return 'Records' in event and len(event['Records']) > 0 and 'eventSource' in event['Records'][0] and event['Records'][0]['eventSource'] == 'aws:sqs'
+
+          def _is_api_gateway_event(event):
+              """Check if the event is from API Gateway"""
+              return 'requestContext' in event and 'resource' in event
+
+          def _handle_api_gateway_request(event):
               """
-              Phase 1: Display SQS message content
+              Handle API Gateway request
               
               Args:
-                  event: SQS event containing Records
+                  event: API Gateway event
+                  
+              Returns:
+                  dict: API Gateway Lambda proxy response
+              """
+              logger.info(f"Processing API Gateway request")
+              
+              # Parse request body
+              try:
+                  body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
+              except (json.JSONDecodeError, TypeError) as e:
+                  logger.error(f"Failed to parse request body: {str(e)}")
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({'error': 'Invalid JSON in request body'})
+                  }
+              
+              # Validate required fields
+              if not body.get('request_id') or not body.get('prompt'):
+                  logger.warning("Missing required fields: request_id or prompt")
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({'error': 'Missing required fields: request_id, prompt'})
+                  }
+              
+              logger.info(f"Message content: {json.dumps(body, indent=2)}")
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'message': 'Message processed successfully via API Gateway',
+                      'request_id': body.get('request_id'),
+                      'timestamp': datetime.utcnow().isoformat()
+                  })
+              }
+
+          def _handle_sqs_message(event):
+              """
+              Handle SQS message
+              
+              Args:
+                  event: SQS event
+                  
+              Returns:
+                  dict: Status response
+              """
+              logger.info(f"Processing SQS message")
+              
+              # Extract SQS records
+              records = event.get('Records', [])
+              
+              if not records:
+                  logger.warning("No SQS records found in event")
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({'message': 'No SQS records found'})
+                  }
+              
+              # Process first record (batch size = 1)
+              record = records[0]
+              message_body = json.loads(record['body'])
+              
+              logger.info(f"Processing message: {json.dumps(message_body)}")
+              logger.info(f"Message content: {json.dumps(message_body, indent=2)}")
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'message': 'Message processed successfully via SQS',
+                      'request_id': message_body.get('request_id'),
+                      'timestamp': datetime.utcnow().isoformat()
+                  })
+              }
+
+          def lambda_handler(event, context):
+              """
+              Phase 1 & 1.1: Handle both SQS and API Gateway requests
+              
+              Args:
+                  event: Event from SQS or API Gateway
                   context: Lambda context
                   
               Returns:
@@ -210,32 +297,17 @@ Resources:
               try:
                   logger.info(f"Received event: {json.dumps(event)}")
                   
-                  # Extract SQS records
-                  records = event.get('Records', [])
-                  
-                  if not records:
-                      logger.warning("No SQS records found in event")
+                  # Determine event source and handle accordingly
+                  if _is_api_gateway_event(event):
+                      return _handle_api_gateway_request(event)
+                  elif _is_sqs_event(event):
+                      return _handle_sqs_message(event)
+                  else:
+                      logger.error("Unknown event type")
                       return {
                           'statusCode': 400,
-                          'body': json.dumps({'message': 'No SQS records found'})
+                          'body': json.dumps({'error': 'Unknown event type'})
                       }
-                  
-                  # Process first record (batch size = 1)
-                  record = records[0]
-                  message_body = json.loads(record['body'])
-                  
-                  logger.info(f"Processing message: {json.dumps(message_body)}")
-                  
-                  # Phase 1: Just display the message
-                  logger.info(f"Message content: {json.dumps(message_body, indent=2)}")
-                  
-                  return {
-                      'statusCode': 200,
-                      'body': json.dumps({
-                          'message': 'Message processed successfully',
-                          'timestamp': datetime.utcnow().isoformat()
-                      })
-                  }
                   
                   # ========================================================================
                   # Phase 2: Bedrock Integration (Commented for future implementation)
@@ -358,6 +430,151 @@ Resources:
       FunctionResponseTypes:
         - ReportBatchItemFailures
 
+  # ============================================================================
+  # API Gateway REST API (Phase 1.1)
+  # ============================================================================
+  LambdaAgentsAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-api'
+      Description: API Gateway for Lambda Agents
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
+
+  # ============================================================================
+  # API Gateway Resource (/v1)
+  # ============================================================================
+  V1Resource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LambdaAgentsAPI
+      ParentId: !GetAtt LambdaAgentsAPI.RootResourceId
+      PathPart: v1
+
+  # ============================================================================
+  # API Gateway Resource (/v1/agents)
+  # ============================================================================
+  AgentsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LambdaAgentsAPI
+      ParentId: !Ref V1Resource
+      PathPart: agents
+
+  # ============================================================================
+  # API Gateway Method (POST /v1/agents)
+  # ============================================================================
+  AgentsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LambdaAgentsAPI
+      ResourceId: !Ref AgentsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAgentsFunction.Arn}/invocations'
+
+  # ============================================================================
+  # Lambda Permission for API Gateway
+  # ============================================================================
+  ApiGatewayInvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaAgentsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${LambdaAgentsAPI}/*/*'
+
+  # ============================================================================
+  # API Gateway CloudWatch Logs Role
+  # ============================================================================
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-apigw-logs-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ApiGatewayCloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
+
+  # ============================================================================
+  # API Gateway Account (CloudWatch Logs Role)
+  # ============================================================================
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  # ============================================================================
+  # API Gateway Deployment
+  # ============================================================================
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - AgentsMethod
+    Properties:
+      RestApiId: !Ref LambdaAgentsAPI
+      Description: !Sub 'Deployment for ${Environment}'
+
+  # ============================================================================
+  # API Gateway Stage
+  # ============================================================================
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn:
+      - ApiGatewayAccount
+    Properties:
+      RestApiId: !Ref LambdaAgentsAPI
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref Environment
+      Description: !Sub 'Stage for ${Environment} environment'
+      TracingEnabled: true
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: dev1
+
 Outputs:
   QueueURL:
     Description: SQS Queue URL for sending messages
@@ -400,3 +617,15 @@ Outputs:
     Value: !Ref LambdaLogGroup
     Export:
       Name: !Sub '${ProjectName}-${Environment}-LogGroup'
+
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for /v1/agents
+    Value: !Sub 'https://${LambdaAgentsAPI}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/v1/agents'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ApiEndpoint'
+
+  ApiId:
+    Description: API Gateway REST API ID
+    Value: !Ref LambdaAgentsAPI
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ApiId'

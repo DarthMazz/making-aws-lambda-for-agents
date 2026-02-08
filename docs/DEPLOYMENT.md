@@ -1,35 +1,39 @@
 # Handoff Document - Ready for Deployment
 
-**日付**：2026-02-07  
-**プロジェクト**：AWS Lambda + SQS + Bedrock + S3 統合  
-**ステータス**：✓ 全ワークフロー完了 / デプロイ準備完了
+**日付**：2026-02-08  
+**プロジェクト**：AWS Lambda + SQS + API Gateway + Bedrock + S3 統合  
+**ステータス**：✓ Phase 1.1 実装完了 / デプロイ準備完了
 
 ---
 
 ## 1. 完了した工程
 
 ### ✓ Planner
-- 要件定義書作成（docs/REQUIREMENTS.md）
-- 機能要件・インフラ要件を明確化
+- 要件定義書作成・更新（docs/REQUIREMENTS.md）
+- Phase 1.1：API Gateway 統合要件追加
 
 ### ✓ Architect  
 - CloudFormation テンプレート設計（docs/ARCHITECTURE.md）
+- API Gateway リソース設計追加
 - リソース命名規則・パラメータ化戦略定義
 - IAM 権限設計・Output 定義
 
 ### ✓ Coder
 - Lambda 関数実装（Phase 1：メッセージ表示）
-- CloudFormation テンプレート実装（template.yaml）
-- 環境変数・パラメータ設定完了
+- API Gateway 統合実装（Phase 1.1：HTTP リクエスト対応）
+- CloudFormation テンプレート実装・更新（template.yaml）
+- イベント形式の判定・分岐処理実装
 
 ### ✓ Reviewer
 - Lambda コード品質確認 → **PASS**
+- API Gateway 統合コード確認 → **PASS**
 - CloudFormation 構文・ベストプラクティス確認 → **PASS**
 - Parameter/Output 設計確認 → **PASS**
 
 ### ✓ Security
 - IAM 権限最小化確認 → **PASS**
 - S3 セキュリティ設定確認 → **PASS**
+- API Gateway アクセス設定確認 → **PASS**
 - Bedrock アクセス権限確認 → **PASS**
 - ログ・監査設定確認 → **PASS**
 
@@ -41,6 +45,7 @@
 |---------|------|------|
 | [docs/REQUIREMENTS.md](../docs/REQUIREMENTS.md) | 要件定義書 | ✓ 完成 |
 | [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) | テンプレート設計書 | ✓ 完成 |
+| [docs/api/openapi.yaml](../docs/api/openapi.yaml) | OpenAPI 3.0.0 仕様書 | ✓ 完成 |
 | [template.yaml](../template.yaml) | CloudFormation テンプレート | ✓ 完成 |
 
 ### リソース構成
@@ -54,23 +59,222 @@ template.yaml
 │   ├── LogRetentionDays
 │   └── BedrockRegion
 │
-├── Resources（8個）
+├── Resources（13個）
 │   ├── SQS Queue
 │   ├── SQS DLQ
 │   ├── S3 Bucket
 │   ├── IAM Role + Policies（3個）
 │   ├── Lambda Function（インラインコード）
 │   ├── Event Source Mapping
-│   └── CloudWatch Log Group
+│   ├── CloudWatch Log Group
+│   ├── API Gateway REST API
+│   ├── API Gateway Resource (/v1/agents)
+│   ├── API Gateway Method (POST)
+│   ├── API Gateway Deployment
+│   ├── API Gateway Stage
+│   └── Lambda Permission（API Gateway）
 │
-└── Outputs（7個）
+└── Outputs（9個）
     ├── QueueURL
     ├── QueueArn
     ├── BucketName
     ├── LambdaFunctionArn
     ├── LambdaFunctionName
     ├── RoleArn
-    └── LogGroupName
+    ├── LogGroupName
+    ├── ApiEndpoint
+    └── ApiId
+```
+
+---
+
+## 2a. API Gateway 統合仕様（フェーズ1.1）
+
+### 2a.1 エンドポイント
+
+```
+https://{API_ID}.execute-api.ap-northeast-1.amazonaws.com/{Stage}/v1/agents
+```
+
+**パラメータ**：
+- `{API_ID}`：CloudFormation Stack のOutput `ApiId` から取得
+- `{Stage}`：Environment パラメータ（デフォルト: `dev`）
+
+### 2a.2 リクエスト形式
+
+**HTTP メソッド**: `POST`
+
+**Content-Type**: `application/json`
+
+**リクエストボディ**:
+```json
+{
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "prompt": "AWSとは何ですか？",
+  "model_id": "anthropic.claude-3-sonnet-20240229-v1:0"
+}
+```
+
+**フィールド説明**:
+- `request_id`（必須）: リクエストの一意識別子（UUID）
+- `prompt`（必須）: 処理対象のプロンプト・質問
+- `model_id`（オプション）: Bedrock モデルID（省略時のデフォルト: Claude 3 Sonnet）
+
+### 2a.3 レスポンス形式
+
+**成功時（HTTP 200）**:
+```json
+{
+  "message": "Message processed successfully via API Gateway",
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2026-02-08T12:34:56.789000"
+}
+```
+
+**バリデーションエラー（HTTP 400）**:
+```json
+{
+  "error": "Missing required fields: request_id, prompt"
+}
+```
+
+**サーバーエラー（HTTP 500）**:
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+### 2a.4 使用例
+
+**cURL を使用**:
+```bash
+API_ENDPOINT="https://{API_ID}.execute-api.ap-northeast-1.amazonaws.com/dev/v1/agents"
+
+curl -X POST "$API_ENDPOINT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": "AWSとは何ですか？"
+  }'
+```
+
+**Python を使用**:
+```python
+import requests
+import json
+from uuid import uuid4
+
+api_endpoint = "https://{API_ID}.execute-api.ap-northeast-1.amazonaws.com/dev/v1/agents"
+
+payload = {
+    "request_id": str(uuid4()),
+    "prompt": "AWSとは何ですか？",
+    "model_id": "anthropic.claude-3-sonnet-20240229-v1:0"
+}
+
+response = requests.post(api_endpoint, json=payload)
+print(json.dumps(response.json(), indent=2))
+```
+
+**AWS CLI を使用**:
+```bash
+API_ENDPOINT="https://{API_ID}.execute-api.ap-northeast-1.amazonaws.com/dev/v1/agents"
+
+aws apigateway test-invoke-method \
+  --rest-api-id {API_ID} \
+  --resource-id {RESOURCE_ID} \
+  --http-method POST \
+  --body '{
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": "AWSとは何ですか？"
+  }' \
+  --region ap-northeast-1
+```
+
+### 2a.5 CloudFormation Stack 出力から API エンドポイントを取得
+
+```bash
+# Stack 出力の確認
+aws cloudformation describe-stacks \
+  --stack-name lambda-agents-dev \
+  --query 'Stacks[0].Outputs[?OutputKey==`ApiEndpoint`]' \
+  --region ap-northeast-1
+
+# 期待される出力
+[
+    {
+        "OutputKey": "ApiEndpoint",
+        "OutputValue": "https://abcd1234.execute-api.ap-northeast-1.amazonaws.com/dev/v1/agents"
+    }
+]
+```
+
+### 2a.6 OpenAPI 仕様の確認
+
+詳細な API 仕様は [docs/api/openapi.yaml](../docs/api/openapi.yaml) を参照してください。
+
+#### OpenAPI ファイルの構成
+
+```yaml
+openapi: 3.0.0
+info:
+  title: Lambda Agents API
+  version: 1.1.0
+paths:
+  /v1/agents:
+    post:
+      # リクエスト・レスポンス仕様
+      requestBody: ...
+      responses:
+        '200': ...
+        '400': ...
+        '500': ...
+components:
+  schemas:
+    AgentRequest: ...     # リクエストスキーマ
+    SuccessResponse: ...  # 成功レスポンス
+    ErrorResponse: ...    # エラーレスポンス
+```
+
+#### Swagger UI でのドキュメント閲覧（オプション）
+
+オンラインの Swagger Editor で OpenAPI 仕様を確認：
+
+1. [Swagger Editor](https://editor.swagger.io/) を開く
+2. File → Import URL で以下を指定：
+   ```
+   https://raw.githubusercontent.com/{username}/{repo}/main/docs/api/openapi.yaml
+   ```
+   または、ローカルファイルをコピー・ペースト
+
+#### JSON スキーマの検証
+
+リクエストボディが OpenAPI スキーマに準拠しているか確認する場合：
+
+```python
+import json
+import yaml
+from jsonschema import validate, ValidationError
+
+# OpenAPI ファイルを読み込み
+with open('docs/api/openapi.yaml', 'r', encoding='utf-8') as f:
+    openapi_spec = yaml.safe_load(f)
+
+# AgentRequest スキーマを取得
+agent_request_schema = openapi_spec['components']['schemas']['AgentRequest']
+
+# リクエストボディをテスト
+test_request = {
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": "AWSとは何ですか？"
+}
+
+try:
+    validate(instance=test_request, schema=agent_request_schema)
+    print("✓ リクエストは有効です")
+except ValidationError as e:
+    print(f"✗ バリデーションエラー: {e.message}")
 ```
 
 ---
@@ -225,6 +429,17 @@ aws cloudformation create-stack \
   --region ap-northeast-1
 ```
 
+#### 1a) Stack 更新（既存）
+```bash
+cd /Users/yo4taka/garage/repos/github/darthmazz/making-aws-lambda-for-agents
+
+aws cloudformation update-stack \
+  --stack-name lambda-agents-dev \
+  --template-body file://template.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region ap-northeast-1
+```
+
 #### 2) Stack 作成ステータス確認
 ```bash
 aws cloudformation describe-stacks \
@@ -233,7 +448,7 @@ aws cloudformation describe-stacks \
   --query 'Stacks[0].StackStatus'
 ```
 
-**期待される出力**：`CREATE_COMPLETE` または `CREATE_IN_PROGRESS`
+**期待される出力**：`CREATE_COMPLETE` / `CREATE_IN_PROGRESS` / `UPDATE_COMPLETE` / `UPDATE_IN_PROGRESS`
 
 #### 3) リソース確認
 ```bash
@@ -492,10 +707,15 @@ aws iam get-role-policy \
 ## 10. 次のステップ
 
 1. **デプロイ実行**（このドキュメント内のコマンド実行）
-2. **検証テスト**実施（検証チェックリストを参照）
+2. **検証テスト**実施
+   - SQS メッセージ送信・Lambda 実行確認
+   - API Gateway エンドポイント呼び出し確認
 3. **Phase 2 計画**：Bedrock 統合スケジュール策定
+   - 認証・認可の実装（API Key / OAuth）
+   - Bedrock API 呼び出し実装
+   - S3 への結果保存実装
 4. **Git コミット**：テンプレート・ドキュメントを main ブランチにマージ
 
 ---
 
-**All Clear - Ready for Production Deployment ✓**
+**All Clear - Phase 1.1 Ready for Production Deployment ✓**
